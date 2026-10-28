@@ -1040,10 +1040,10 @@ function alerts(T) {
 // Via WiFi senza AUTH il firmware accetta solo questi (PROTOCOLLO §5); le password non finiscono nel log.
 const RO_CMD = /^(PING|STATE|VER|STATUS|AUTO|PROFILE|NET|LEARN|HELP|\?)$/i;
 const maskCmd = (c) => c.replace(/^((?:NET\s+(?:PASS|APPASS|KEY)|AUTH)\s+)\S.*$/i, '$1••••••');
-const canWrite = () => S.conn.kind !== 'ws' || S.auth.state === 'sent' || S.auth.state === 'ok';
+const canWrite = () => S.conn.kind === 'cloud' ? !!keyGet() : S.conn.kind !== 'ws' || S.auth.state === 'sent' || S.auth.state === 'ok';
 function send(cmd, opt) {
   opt = opt || {};
-  if (S.conn.kind === 'cloud') { if (!opt.silent && !opt.quiet) Hooks.toast('warn', 'Dal cloud la pagina mostra solo i dati: i comandi si danno da USB o dalla rete di casa (WiFi).'); return false; }
+  if (S.conn.kind === 'cloud' && !keyGet()) { if (!opt.silent && !opt.quiet) Hooks.toast('warn', 'Per comandare dal cloud scrivi in Rete → «Chiave in questa pagina» la stessa chiave data alla serra con NET KEY da USB (almeno 16 caratteri).', 9000); return false; }
   if (!Link.ready()) { if (!opt.silent) Hooks.toast('warn', 'Collega prima l’ESP32 (USB o WiFi) oppure avvia la simulazione.'); return false; }
   cmd = String(cmd).trim();
   if (!canWrite() && !RO_CMD.test(cmd)) {
@@ -1163,7 +1163,7 @@ function onConnected(kind, label, opt) {
   S.fw = FW0();
   S.cycle = { legacy: {}, got: false };
   S.auth.state = 'none';
-  addEvent(CONN_TAG[kind] || 'SERIALE', kind === 'sim' ? 'Simulazione avviata' : kind === 'ws' ? 'Collegato via WiFi · ' + label : kind === 'cloud' ? 'Collegato al cloud · serra ' + label + ' (sola lettura)' : 'Connessione aperta · ' + S.conn.baud + ' baud', 'info');
+  addEvent(CONN_TAG[kind] || 'SERIALE', kind === 'sim' ? 'Simulazione avviata' : kind === 'ws' ? 'Collegato via WiFi · ' + label : kind === 'cloud' ? 'Collegato al cloud · serra ' + label + (keyGet() ? ' · comandi firmati con la chiave' : ' · sola lettura (manca la chiave)') : 'Connessione aperta · ' + S.conn.baud + ' baud', 'info');
   changed('conn');
   if (kind === 'cloud') { Object.assign(S.fw, { known: true, v2: true, v3: true }); changed('fw'); return; }   // sola lettura: niente VER
   // Sonda il firmware: v2.1 e v3 rispondono a VER, lo sketch storico no (resta in modalità compatibile).
@@ -2287,7 +2287,7 @@ Views.rete = {
   mount(root) {
     const row = (id, label, ph, btn) => '<div class="winctl" style="margin:4px 0"><label style="min-width:150px">' + label + '</label><input class="input" id="' + id + '" placeholder="' + ph + '" style="flex:1;min-width:140px"><button type="button" class="btn sm" data-n="' + id + '">' + (btn || 'Invia') + '</button></div>';
     root.innerHTML = '<section class="panel"><div class="hd"><h3>Stato</h3><button type="button" class="btn sm" id="nRef">' + ic('refresh', 'sm') + 'Aggiorna</button></div><div id="nSt" class="sub"></div></section>' +
-      '<section class="panel"><h3>Configurazione</h3><p class="help">La chiave di controllo e la password del punto di accesso si cambiano solo da USB. SSID e password si applicano con «Riavvia rete».</p>' +
+      '<section class="panel"><h3>Configurazione</h3><p class="help">La chiave di controllo e la password del punto di accesso si cambiano solo da USB (Console: NET KEY &lt;chiave&gt;). Per comandare da internet (Cloud) la chiave deve avere almeno 16 caratteri: scrivila anche in «Chiave in questa pagina» su ogni telefono/computer. SSID e password si applicano con «Riavvia rete».</p>' +
       row('nSsid', 'Rete di casa (SSID)', 'NomeRete') + row('nPass', 'Password rete di casa', 'password', 'Invia') + row('nHook', 'Webhook n8n', 'http://n8n.local:5678/webhook/serra') +
       row('nPlug0', 'Presa luci (Shelly)', 'IP es. 192.168.4.20 [gen 1|2]') + row('nPlug1', 'Presa riscaldatore', 'IP es. 192.168.4.21 [gen 1|2]') + row('nKey', 'Chiave in questa pagina', 'chiave di controllo', 'Salva') + row('nCloud', 'Codice cloud', 'es. serra-mia (6-16 a-z 0-9 -)', 'Imposta') +
       '<div class="winctl"><button type="button" class="btn sm" id="nStaOn">Stazione ON</button><button type="button" class="btn sm" id="nStaOff">Stazione OFF</button><button type="button" class="btn sm" id="nRst">Riavvia rete</button><button type="button" class="btn sm" id="nCloudOn">Cloud ON</button><button type="button" class="btn sm" id="nCloudOff">Cloud OFF</button></div></section>' +
@@ -2319,7 +2319,7 @@ Views.rete = {
       (n.cloud ? '<br>Cloud ' + (n.cloud.on ? (n.cloud.ok ? '<span class="chip ok">collegato · ' + esc(n.cloud.host) + '</span>' : '<span class="chip warn">' + (n.sta && n.sta.ok ? 'in collegamento' : 'serve la rete di casa') + '</span>') : '<span class="chip">spento</span>') +
         ' · codice <b>' + esc(n.cloud.id) + '</b> · link da condividere: <a href="' + esc(cloudLink(n.cloud.id)) + '" target="_blank" rel="noopener">' + esc(cloudLink(n.cloud.id)) + '</a>' : '') +
       ' · prese ' + (n.plugs || []).map((p) => (p.id ? 'riscaldatore ' : 'luci ') + (p.ip ? esc(p.ip) + (p.ok ? ' ✓' : ' ✗') : '—')).join(', ') +
-      '<br>Collegamento di questa pagina: ' + (S.conn.kind === 'ws' ? 'WiFi · ' + esc(WsDrv.host || '') + ' · ' + ({ ok: 'comandi abilitati', sent: 'chiave inviata', bad: 'chiave rifiutata', none: 'sola lettura' }[S.auth.state] || '') : S.conn.kind === 'serial' ? 'USB' : S.conn.kind === 'cloud' ? 'cloud · ' + esc(CloudDrv.id) + ' · sola lettura' : S.conn.kind === 'sim' ? 'simulazione' : 'nessuno');
+      '<br>Collegamento di questa pagina: ' + (S.conn.kind === 'ws' ? 'WiFi · ' + esc(WsDrv.host || '') + ' · ' + ({ ok: 'comandi abilitati', sent: 'chiave inviata', bad: 'chiave rifiutata', none: 'sola lettura' }[S.auth.state] || '') : S.conn.kind === 'serial' ? 'USB' : S.conn.kind === 'cloud' ? 'cloud · ' + esc(CloudDrv.id) + (keyGet() ? ' · comandi firmati' : ' · sola lettura: manca la chiave') : S.conn.kind === 'sim' ? 'simulazione' : 'nessuno');
     const o = S.ota;
     $('#oSt').innerHTML = (S.otaUp != null ? 'Invio del file: ' + S.otaUp + ' %<br>' : '') + (o ? 'Stato: <b>' + esc(o.st) + '</b>' + (o.pct ? ' · ' + o.pct + ' %' : '') + ' · ' + esc(o.msg || '') : '');
     $('#oGo').disabled = S.conn.kind !== 'ws' || S.otaUp != null;
@@ -2468,10 +2468,26 @@ $('#btnWifi').onclick = () => {
 // questa pagina, anche su https, le legge via WebSocket sicuro da qualsiasi posto.
 const CLOUD_URL = 'wss://broker.hivemq.com:8884/mqtt';
 const cloudLink = (id) => 'https://conventoenricojob-design.github.io/serra-dashboard/?cloud=' + encodeURIComponent(id);
+const mqttEnc = new TextEncoder();
+const mqttStr = (x) => { const b = mqttEnc.encode(x); return [b.length >> 8, b.length & 255, ...b]; };
+const mqttPkt = (type, body) => { const l = []; let n = body.length; do { let d = n % 128; n = Math.floor(n / 128); if (n) d |= 128; l.push(d); } while (n); return new Uint8Array([type, ...l, ...body]); };
+// Comandi firmati: "<ms> <HMAC-SHA256(chiave, id|ms|comando) in hex> <comando>" su serra/<id>/cmd (PROTOCOLLO.md §8).
+async function cloudSign(key, msg) {
+  const k = await crypto.subtle.importKey('raw', mqttEnc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return [...new Uint8Array(await crypto.subtle.sign('HMAC', k, mqttEnc.encode(msg)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 const CloudDrv = {
-  ws: null, id: '', open: false, retry: 0, timer: null, ping: null, want: false, online: null,
+  ws: null, id: '', open: false, retry: 0, timer: null, ping: null, want: false, online: null, lastMs: 0,
   ready() { return this.open; },
-  write() {},
+  write(line) {
+    const key = keyGet(), ws = this.ws, id = this.id;
+    if (!key || !ws || !this.open) return;
+    if (!(window.crypto && crypto.subtle)) { Hooks.toast('bad', 'Questo browser non può firmare i comandi: apri la pagina da https (GitHub) o da file.'); return; }
+    const ms = this.lastMs = Math.max(Date.now(), this.lastMs + 1);
+    cloudSign(key, id + '|' + ms + '|' + line).then((sig) => {
+      if (ws.readyState === 1) ws.send(mqttPkt(0x30, [...mqttStr('serra/' + id + '/cmd'), ...mqttEnc.encode(ms + ' ' + sig + ' ' + line)]));
+    });
+  },
   connect(id) {
     this.want = true; this.id = id;
     try { localStorage.setItem('serra.cloudId', id); } catch (e) { /* ok */ }
@@ -2480,9 +2496,7 @@ const CloudDrv = {
     try { ws = new WebSocket(CLOUD_URL, 'mqtt'); } catch (e) { Hooks.toast('bad', 'Cloud non raggiungibile.'); return; }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
-    const enc = new TextEncoder(), dec = new TextDecoder();
-    const str = (x) => { const b = enc.encode(x); return [b.length >> 8, b.length & 255, ...b]; };
-    const pkt = (type, body) => { const l = []; let n = body.length; do { let d = n % 128; n = Math.floor(n / 128); if (n) d |= 128; l.push(d); } while (n); return new Uint8Array([type, ...l, ...body]); };
+    const dec = new TextDecoder(), str = mqttStr, pkt = mqttPkt;
     ws.onopen = () => ws.send(pkt(0x10, [...str('MQTT'), 4, 0x02, 0, 60, ...str('dash-' + Math.random().toString(36).slice(2, 10))]));
     let buf = new Uint8Array(0);
     ws.onmessage = (e) => {
@@ -2504,6 +2518,15 @@ const CloudDrv = {
         } else if (h >> 4 === 3) {                            // PUBLISH
           const tl = (body[0] << 8) | body[1], topic = dec.decode(body.subarray(2, 2 + tl));
           const msg = dec.decode(body.subarray(2 + tl + (((h >> 1) & 3) ? 2 : 0)));
+          if (topic.endsWith('/cmd')) continue;
+          if (topic.endsWith('/ack')) {
+            const m2 = /^(\d+) (OK|NO)\s*(.*)$/.exec(msg);
+            if (m2) {
+              logLine('rx', '[CLOUD] ' + (m2[2] === 'OK' ? 'comando accettato' : 'comando rifiutato: ' + m2[3]));
+              if (m2[2] === 'NO') { Hooks.toast('bad', 'La serra ha rifiutato il comando: ' + m2[3], 8000); addEvent('CLOUD', 'Comando rifiutato: ' + m2[3], 'warn'); }
+            }
+            continue;
+          }
           if (topic.endsWith('/online')) {
             const on = msg === '1';
             if (on !== this.online) { this.online = on; addEvent('CLOUD', on ? 'La serra è in linea' : 'La serra non è in linea: dati fermi all’ultimo invio', on ? 'info' : 'warn'); changed('conn'); }
