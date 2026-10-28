@@ -444,6 +444,7 @@ select.input { width:auto; }
   <symbol id="i-ext" viewBox="0 0 18 18"><path d="M7.500 4H4v10h10v-3.500 M10 3h5v5 M15 3l-6 6"/></symbol>
   <symbol id="i-auto" viewBox="0 0 18 18"><path d="M14.500 7A6 6 0 0 0 3.800 5.500 M3.500 11a6 6 0 0 0 10.700 1.500 M14.800 3.200V7H11 M3.200 14.800V11H7"/></symbol>
   <symbol id="i-leaf" viewBox="0 0 18 18"><path d="M3.500 14.500C3.500 7.500 7.500 3.500 15 3.500c0 7.500-4 11-11.500 11z M3.500 14.500 10.500 7.500"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 18 18"><path d="M5 14h8.500a3 3 0 0 0 .3-6A4.500 4.500 0 0 0 5 7.300 3.400 3.400 0 0 0 5 14z"/></symbol>
   <symbol id="i-wifi" viewBox="0 0 18 18"><path d="M2 7.200a10 10 0 0 1 14 0 M4.400 9.900a6.600 6.600 0 0 1 9.200 0 M6.800 12.600a3.200 3.200 0 0 1 4.400 0 M9 15h.01"/></symbol>
   <symbol id="i-upload" viewBox="0 0 18 18"><path d="M9 12V3.500 M5.500 7 9 3.500 12.500 7 M3.500 14.500h11"/></symbol>
 </svg>
@@ -485,6 +486,7 @@ select.input { width:auto; }
       <span class="simpill" id="simPill" hidden>SIMULAZIONE</span>
       <button type="button" class="btn btn-primary" id="btnConnect"><svg class="ic sm"><use href="#i-usb"/></svg><span>Connetti ESP32</span></button>
       <button type="button" class="btn" id="btnWifi"><svg class="ic sm"><use href="#i-wifi"/></svg><span>WiFi</span></button>
+      <button type="button" class="btn" id="btnCloud"><svg class="ic sm"><use href="#i-cloud"/></svg><span>Cloud</span></button>
       <button type="button" class="btn" id="btnSim"><svg class="ic sm"><use href="#i-play"/></svg><span>Simulazione</span></button>
       <button type="button" class="btn btn-danger" id="btnStop"><svg class="ic sm solid"><use href="#i-stop"/></svg><span>STOP EMERGENZA</span></button>
       <button type="button" class="btn btn-icon" id="btnTheme" aria-label="Cambia tema chiaro o scuro"><svg class="ic"><use href="#i-sun"/></svg></button>
@@ -1041,6 +1043,7 @@ const maskCmd = (c) => c.replace(/^((?:NET\s+(?:PASS|APPASS|KEY)|AUTH)\s+)\S.*$/
 const canWrite = () => S.conn.kind !== 'ws' || S.auth.state === 'sent' || S.auth.state === 'ok';
 function send(cmd, opt) {
   opt = opt || {};
+  if (S.conn.kind === 'cloud') { if (!opt.silent && !opt.quiet) Hooks.toast('warn', 'Dal cloud la pagina mostra solo i dati: i comandi si danno da USB o dalla rete di casa (WiFi).'); return false; }
   if (!Link.ready()) { if (!opt.silent) Hooks.toast('warn', 'Collega prima l’ESP32 (USB o WiFi) oppure avvia la simulazione.'); return false; }
   cmd = String(cmd).trim();
   if (!canWrite() && !RO_CMD.test(cmd)) {
@@ -1153,14 +1156,16 @@ function resetData() {
   S.bench = { active: false, pending: false, armed: false, live: false, liveMs: S.bench.liveMs, readBusy: false };
 }
 // kind: serial | sim | ws. opt.keep: riconnessione WiFi alla stessa serra, la storia resta.
+const CONN_TAG = { ws: 'WIFI', cloud: 'CLOUD', sim: 'SERIALE', serial: 'SERIALE' };
 function onConnected(kind, label, opt) {
   if (!(opt && opt.keep)) resetData();
   Object.assign(S.conn, { kind, state: 'connected', label, since: Date.now() });
   S.fw = FW0();
   S.cycle = { legacy: {}, got: false };
   S.auth.state = 'none';
-  addEvent(kind === 'ws' ? 'WIFI' : 'SERIALE', kind === 'sim' ? 'Simulazione avviata' : kind === 'ws' ? 'Collegato via WiFi · ' + label : 'Connessione aperta · ' + S.conn.baud + ' baud', 'info');
+  addEvent(CONN_TAG[kind] || 'SERIALE', kind === 'sim' ? 'Simulazione avviata' : kind === 'ws' ? 'Collegato via WiFi · ' + label : kind === 'cloud' ? 'Collegato al cloud · serra ' + label + ' (sola lettura)' : 'Connessione aperta · ' + S.conn.baud + ' baud', 'info');
   changed('conn');
+  if (kind === 'cloud') { Object.assign(S.fw, { known: true, v2: true, v3: true }); changed('fw'); return; }   // sola lettura: niente VER
   // Sonda il firmware: v2.1 e v3 rispondono a VER, lo sketch storico no (resta in modalità compatibile).
   // In USB l'ESP32 si riavvia all'apertura della porta: si aspetta che parta.
   if (kind === 'ws') { authSend(); hello(kind); }
@@ -1168,7 +1173,7 @@ function onConnected(kind, label, opt) {
   setTimeout(() => { if (Link.ready() && !S.fw.known) { S.fw.known = true; changed('fw'); addEvent('FIRMWARE', 'Firmware senza modalità banco: comandi ridotti (K1–K3, K5, STOP)', 'warn'); } }, kind === 'sim' ? 1200 : kind === 'ws' ? 8000 : 5200);
 }
 function onDisconnected(why) {
-  const wasBench = S.mode === 'bench', ws = S.conn.kind === 'ws';
+  const wasBench = S.mode === 'bench', tag = CONN_TAG[S.conn.kind] || 'SERIALE';
   Probe.stop();
   Object.assign(S.conn, { state: 'idle', kind: 'none', label: '' });
   S.fw = FW0(); S.auth.state = 'none';
@@ -1176,7 +1181,7 @@ function onDisconnected(why) {
   for (let i = 1; i <= 8; i++) relayOff(i, 'disconnesso');
   clearInterval(keepAliveTimer); keepAliveTimer = null;
   if (wasBench) { S.mode = 'run'; changed('mode'); }
-  addEvent(ws ? 'WIFI' : 'SERIALE', why || 'Disconnesso', 'warn');
+  addEvent(tag, why || 'Disconnesso', 'warn');
   changed('conn'); changed('relays');
 }
 
@@ -1673,6 +1678,7 @@ function updateChrome() {
   $('span', bc).textContent = on && c.kind === 'serial' ? 'Disconnetti' : 'Connetti ESP32'; bc.disabled = on && c.kind === 'sim';
   const bs = $('#btnSim'); $('span', bs).textContent = on && c.kind === 'sim' ? 'Ferma simulazione' : 'Simulazione'; bs.disabled = on && c.kind === 'serial';
   $('#simPill').hidden = c.kind !== 'sim';
+  $('span', $('#btnCloud')).textContent = on && c.kind === 'cloud' ? 'Esci dal cloud' : 'Cloud';
   $('#btnStop').disabled = !on;
   const th = S.settings.theme; $('#btnTheme').innerHTML = ic(th === 'dark' ? 'sun' : 'moon'); document.documentElement.dataset.theme = th;
   applyDeviceMode();
@@ -2283,8 +2289,8 @@ Views.rete = {
     root.innerHTML = '<section class="panel"><div class="hd"><h3>Stato</h3><button type="button" class="btn sm" id="nRef">' + ic('refresh', 'sm') + 'Aggiorna</button></div><div id="nSt" class="sub"></div></section>' +
       '<section class="panel"><h3>Configurazione</h3><p class="help">La chiave di controllo e la password del punto di accesso si cambiano solo da USB. SSID e password si applicano con «Riavvia rete».</p>' +
       row('nSsid', 'Rete di casa (SSID)', 'NomeRete') + row('nPass', 'Password rete di casa', 'password', 'Invia') + row('nHook', 'Webhook n8n', 'http://n8n.local:5678/webhook/serra') +
-      row('nPlug0', 'Presa luci (Shelly)', 'IP es. 192.168.4.20 [gen 1|2]') + row('nPlug1', 'Presa riscaldatore', 'IP es. 192.168.4.21 [gen 1|2]') + row('nKey', 'Chiave in questa pagina', 'chiave di controllo', 'Salva') +
-      '<div class="winctl"><button type="button" class="btn sm" id="nStaOn">Stazione ON</button><button type="button" class="btn sm" id="nStaOff">Stazione OFF</button><button type="button" class="btn sm" id="nRst">Riavvia rete</button></div></section>' +
+      row('nPlug0', 'Presa luci (Shelly)', 'IP es. 192.168.4.20 [gen 1|2]') + row('nPlug1', 'Presa riscaldatore', 'IP es. 192.168.4.21 [gen 1|2]') + row('nKey', 'Chiave in questa pagina', 'chiave di controllo', 'Salva') + row('nCloud', 'Codice cloud', 'es. serra-mia (6-16 a-z 0-9 -)', 'Imposta') +
+      '<div class="winctl"><button type="button" class="btn sm" id="nStaOn">Stazione ON</button><button type="button" class="btn sm" id="nStaOff">Stazione OFF</button><button type="button" class="btn sm" id="nRst">Riavvia rete</button><button type="button" class="btn sm" id="nCloudOn">Cloud ON</button><button type="button" class="btn sm" id="nCloudOff">Cloud OFF</button></div></section>' +
       '<section class="panel"><h3>Aggiorna firmware (OTA)</h3><p class="help">Arduino IDE: Sketch → Esporta binario compilato (schema partizioni «Minimal SPIFFS»), poi scegli il file .bin. I relè vanno a riposo durante l’aggiornamento; se il firmware nuovo non funziona per 60 s la scheda torna da sola alla versione precedente.</p>' +
       '<div class="winctl"><input type="file" id="oFile" accept=".bin"><button type="button" class="btn sm btn-primary" id="oGo">Carica</button><button type="button" class="btn sm" id="oRb">Torna alla versione precedente</button></div>' +
       row('oUrl', 'Da indirizzo web', 'http://server/firmware.bin [md5]', 'Scarica') + '<div id="oSt" class="sub"></div></section>';
@@ -2293,10 +2299,11 @@ Views.rete = {
       const b = e.target.closest('[data-n]'); if (!b) return;
       const v = $('#' + b.dataset.n).value.trim();
       if (!v && b.dataset.n !== 'nKey') return;
-      const map = { nSsid: 'NET SSID ', nPass: 'NET PASS ', nHook: 'NET HOOK ', nPlug0: 'NET PLUG 0 ', nPlug1: 'NET PLUG 1 ', oUrl: 'OTA URL ' };
+      const map = { nSsid: 'NET SSID ', nPass: 'NET PASS ', nHook: 'NET HOOK ', nPlug0: 'NET PLUG 0 ', nPlug1: 'NET PLUG 1 ', nCloud: 'NET CLOUD ID ', oUrl: 'OTA URL ' };
       if (b.dataset.n === 'nKey') { keySet(v); authSend(); Hooks.toast('ok', v ? 'Chiave salvata in questo browser.' : 'Chiave rimossa.'); return; }
       send(map[b.dataset.n] + v);
     });
+    $('#nCloudOn').onclick = () => send('NET CLOUD ON'); $('#nCloudOff').onclick = () => send('NET CLOUD OFF');
     $('#nStaOn').onclick = () => send('NET STA ON'); $('#nStaOff').onclick = () => send('NET STA OFF');
     $('#nRst').onclick = () => confirmBox('Riavviare la rete?', 'La connessione WiFi di questa pagina cadrà per qualche secondo.', 'Riavvia').then((ok) => { if (ok) send('NET RESTART'); });
     $('#oGo').onclick = () => { const f = $('#oFile').files[0]; if (f) confirmBox('Aggiornare il firmware?', f.name + ' · ' + Math.round(f.size / 1024) + ' kB. I relè vanno a riposo e la scheda si riavvia.', 'Aggiorna').then((ok) => { if (ok) otaUpload(f); }); };
@@ -2309,8 +2316,10 @@ Views.rete = {
       'Rete di casa ' + (n.sta && n.sta.ok ? '<span class="chip ok">' + esc(n.sta.ssid) + ' · ' + esc(n.sta.ip) + ' · ' + n.sta.rssi + ' dBm</span>' : '<span class="chip">' + (n.sta && n.sta.en ? 'non connessa' : 'disattivata') + '</span>') +
       ' · ' + esc(n.mdns || '') + ' · client WebSocket ' + (n.ws || 0) + '<br>Chiave ' + (n.key ? '<span class="chip ok">impostata</span>' : '<span class="chip warn">non impostata: rete in sola lettura</span>') +
       ' · ora ' + (n.time && n.time.ok ? esc(n.time.src) : 'non valida') + ' · webhook ' + (n.hook && n.hook.on ? (n.hook.ok ? 'ok' : 'in attesa') : 'spento') +
+      (n.cloud ? '<br>Cloud ' + (n.cloud.on ? (n.cloud.ok ? '<span class="chip ok">collegato · ' + esc(n.cloud.host) + '</span>' : '<span class="chip warn">' + (n.sta && n.sta.ok ? 'in collegamento' : 'serve la rete di casa') + '</span>') : '<span class="chip">spento</span>') +
+        ' · codice <b>' + esc(n.cloud.id) + '</b> · link da condividere: <a href="' + esc(cloudLink(n.cloud.id)) + '" target="_blank" rel="noopener">' + esc(cloudLink(n.cloud.id)) + '</a>' : '') +
       ' · prese ' + (n.plugs || []).map((p) => (p.id ? 'riscaldatore ' : 'luci ') + (p.ip ? esc(p.ip) + (p.ok ? ' ✓' : ' ✗') : '—')).join(', ') +
-      '<br>Collegamento di questa pagina: ' + (S.conn.kind === 'ws' ? 'WiFi · ' + esc(WsDrv.host || '') + ' · ' + ({ ok: 'comandi abilitati', sent: 'chiave inviata', bad: 'chiave rifiutata', none: 'sola lettura' }[S.auth.state] || '') : S.conn.kind === 'serial' ? 'USB' : S.conn.kind === 'sim' ? 'simulazione' : 'nessuno');
+      '<br>Collegamento di questa pagina: ' + (S.conn.kind === 'ws' ? 'WiFi · ' + esc(WsDrv.host || '') + ' · ' + ({ ok: 'comandi abilitati', sent: 'chiave inviata', bad: 'chiave rifiutata', none: 'sola lettura' }[S.auth.state] || '') : S.conn.kind === 'serial' ? 'USB' : S.conn.kind === 'cloud' ? 'cloud · ' + esc(CloudDrv.id) + ' · sola lettura' : S.conn.kind === 'sim' ? 'simulazione' : 'nessuno');
     const o = S.ota;
     $('#oSt').innerHTML = (S.otaUp != null ? 'Invio del file: ' + S.otaUp + ' %<br>' : '') + (o ? 'Stato: <b>' + esc(o.st) + '</b>' + (o.pct ? ' · ' + o.pct + ' %' : '') + ' · ' + esc(o.msg || '') : '');
     $('#oGo').disabled = S.conn.kind !== 'ws' || S.otaUp != null;
@@ -2454,6 +2463,79 @@ $('#btnWifi').onclick = () => {
   WsDrv.connect(h.trim().replace(/^wss?:\/\//, '').replace(/\/.*$/, ''));
 };
 
+// ------------------------------------------------------------------------------ Cloud (MQTT su internet, sola lettura)
+// La serra pubblica le sue righe (conservate) su serra/<codice>/<tipo> nel broker pubblico (PROTOCOLLO.md §8):
+// questa pagina, anche su https, le legge via WebSocket sicuro da qualsiasi posto.
+const CLOUD_URL = 'wss://broker.hivemq.com:8884/mqtt';
+const cloudLink = (id) => 'https://conventoenricojob-design.github.io/serra-dashboard/?cloud=' + encodeURIComponent(id);
+const CloudDrv = {
+  ws: null, id: '', open: false, retry: 0, timer: null, ping: null, want: false, online: null,
+  ready() { return this.open; },
+  write() {},
+  connect(id) {
+    this.want = true; this.id = id;
+    try { localStorage.setItem('serra.cloudId', id); } catch (e) { /* ok */ }
+    clearTimeout(this.timer);
+    let ws;
+    try { ws = new WebSocket(CLOUD_URL, 'mqtt'); } catch (e) { Hooks.toast('bad', 'Cloud non raggiungibile.'); return; }
+    ws.binaryType = 'arraybuffer';
+    this.ws = ws;
+    const enc = new TextEncoder(), dec = new TextDecoder();
+    const str = (x) => { const b = enc.encode(x); return [b.length >> 8, b.length & 255, ...b]; };
+    const pkt = (type, body) => { const l = []; let n = body.length; do { let d = n % 128; n = Math.floor(n / 128); if (n) d |= 128; l.push(d); } while (n); return new Uint8Array([type, ...l, ...body]); };
+    ws.onopen = () => ws.send(pkt(0x10, [...str('MQTT'), 4, 0x02, 0, 60, ...str('dash-' + Math.random().toString(36).slice(2, 10))]));
+    let buf = new Uint8Array(0);
+    ws.onmessage = (e) => {
+      const a = new Uint8Array(e.data), m = new Uint8Array(buf.length + a.length);
+      m.set(buf); m.set(a, buf.length); buf = m;
+      while (buf.length >= 2) {
+        let len = 0, mul = 1, i = 1, d;
+        do { if (i >= buf.length) return; d = buf[i++]; len += (d & 127) * mul; mul *= 128; } while ((d & 128) && i < 5);
+        if (buf.length < i + len) return;
+        const h = buf[0], body = buf.subarray(i, i + len);
+        buf = buf.slice(i + len);
+        if (h >> 4 === 2) {                                   // CONNACK
+          if (body[1] !== 0) { Hooks.toast('bad', 'Il cloud ha rifiutato la connessione.'); this.want = false; ws.close(); return; }
+          ws.send(pkt(0x82, [0, 1, ...str('serra/' + this.id + '/#'), 0]));
+          clearInterval(this.ping); this.ping = setInterval(() => { try { ws.send(new Uint8Array([0xC0, 0])); } catch (er) { /* chiuso */ } }, 30000);
+          SimDrv.stop(true);
+          this.open = true; this.retry = 0; this.online = null; Link.drv = this;
+          onConnected('cloud', this.id, { keep: false });
+        } else if (h >> 4 === 3) {                            // PUBLISH
+          const tl = (body[0] << 8) | body[1], topic = dec.decode(body.subarray(2, 2 + tl));
+          const msg = dec.decode(body.subarray(2 + tl + (((h >> 1) & 3) ? 2 : 0)));
+          if (topic.endsWith('/online')) {
+            const on = msg === '1';
+            if (on !== this.online) { this.online = on; addEvent('CLOUD', on ? 'La serra è in linea' : 'La serra non è in linea: dati fermi all’ultimo invio', on ? 'info' : 'warn'); changed('conn'); }
+            continue;
+          }
+          for (const l of msg.split('\n')) if (l.trim()) ingestLine(l);
+        }
+      }
+    };
+    ws.onclose = () => {
+      if (ws !== this.ws) return;
+      const was = this.open;
+      clearInterval(this.ping); this.ping = null;
+      this.open = false; this.ws = null;
+      if (Link.drv === this) Link.drv = null;
+      if (was) onDisconnected('Cloud interrotto');
+      if (this.want) { this.retry = Math.min(this.retry + 1, 6); this.timer = setTimeout(() => this.connect(this.id), 1000 * 2 ** this.retry); }
+    };
+    ws.onerror = () => {};
+  },
+  disconnect() { this.want = false; clearTimeout(this.timer); if (this.ws) this.ws.close(); }
+};
+$('#btnCloud').onclick = () => {
+  if (S.conn.kind === 'cloud') { CloudDrv.disconnect(); return; }
+  let last = (S.net && S.net.cloud && S.net.cloud.id) || '';
+  try { last = last || localStorage.getItem('serra.cloudId') || ''; } catch (e) { /* ok */ }
+  const id = prompt('Codice cloud della serra (lo trovi in Rete, collegato via USB o WiFi):', last);
+  if (!id) return;
+  if (Link.ready()) { if (S.conn.kind === 'serial') SerialDrv.disconnect(); else if (S.conn.kind === 'ws') WsDrv.disconnect(); else SimDrv.stop(); }
+  CloudDrv.connect(id.trim().toLowerCase());
+};
+
 // ------------------------------------------------------------------------------ comandi della barra
 $('#btnConnect').onclick = () => { if (S.conn.state === 'connected' && S.conn.kind === 'serial') SerialDrv.disconnect(); else SerialDrv.connect(); };
 $('#btnSim').onclick = () => { if (S.conn.kind === 'sim') SimDrv.stop(); else startSim({}); };
@@ -2517,12 +2599,13 @@ function init() {
   // Parametri per prove e dimostrazioni: ?demo (simulazione v2.1) · ?demo=storico · ?bench
   const q = new URLSearchParams(location.search);
   if (q.has('demo')) startSim({ legacy: q.get('demo') === 'storico' });
+  else if (q.get('cloud')) CloudDrv.connect(q.get('cloud').trim().toLowerCase());
   // Servita dall'ESP32 (http su un host di rete): collegamento WiFi automatico alla stessa serra.
   else if (location.protocol === 'http:' && !/^(localhost|127\.|\[::1\])/.test(location.hostname) && location.port !== '3333') WsDrv.connect(location.host);
   if (q.has('bench')) setMode('bench');
 
   // Rilevamento Telefono / Mobile: se aperto su smartphone senza ESP32 connesso, avvia subito la demo interattiva!
-  if (isMobileEnv() && !Link.ready() && !q.has('demo')) {
+  if (isMobileEnv() && !Link.ready() && !q.has('demo') && !q.has('cloud')) {
     setTimeout(() => {
       if (!Link.ready() && S.conn.state === 'idle') {
         startSim({});
